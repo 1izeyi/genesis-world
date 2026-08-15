@@ -39,7 +39,7 @@ BLADE_SPLIT_X = -0.012
 
 # The visible USD blade stays at its authored thickness. Its hidden CPIC collider must be at least one
 # default MPM grid cell wide, otherwise it can fall between the particle/grid samples without opening a cut.
-BLADE_EDGE_THICKNESS = 0.0045
+BLADE_EDGE_THICKNESS = 0.006
 
 # Surface reconstruction is substantially more expensive than one physics step. Keep the 60 Hz physics
 # timestep, but only rebuild and present the SplashSurf mesh at roughly 20 Hz.

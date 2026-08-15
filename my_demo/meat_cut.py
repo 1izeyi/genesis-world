@@ -13,9 +13,6 @@ Keyboard controls
 -----------------
 arrow keys          move the knife forwards / backwards / left / right
 page up / page down raise / lower the knife
-
-The demo records to ``meat_cut.mp4`` by default. Use ``--record FILE`` to choose another filename or
-``--no-record`` to disable recording.
 """
 
 import argparse
@@ -232,21 +229,6 @@ def main():
         help="Run a scripted stroke instead of reading keys, cutting this fraction of the meat height",
     )
     parser.add_argument("--headless", action="store_true", help="Run without the interactive viewer")
-    recording_group = parser.add_mutually_exclusive_group()
-    recording_group.add_argument(
-        "--record",
-        type=str,
-        default="meat_cut.mp4",
-        metavar="FILE",
-        help="Record the run to this video file (default: meat_cut.mp4)",
-    )
-    recording_group.add_argument(
-        "--no-record",
-        action="store_const",
-        const="",
-        dest="record",
-        help="Disable the default video recording",
-    )
     parser.add_argument("--steps", type=int, default=0, help="Stop after this many steps (0 runs until quit)")
     args = parser.parse_args()
 
@@ -329,8 +311,10 @@ def main():
             sampler="regular",
         ),
         surface=gs.surfaces.Rough(
-            color=(0.64, 0.17, 0.18, 1.0),
-            vis_mode="particle",
+            color=(0.78, 0.30, 0.33, 1.0),
+            roughness=0.72,
+            vis_mode="recon",
+            recon_backend="splashsurf",
         ),
     )
     knife_visual = scene.add_entity(
@@ -365,19 +349,7 @@ def main():
         ),
     )
 
-    camera = None
-    if args.record:
-        camera = scene.add_camera(
-            res=(960, 720),
-            pos=eye,
-            lookat=focus,
-            fov=45,
-        )
-
     scene.build(n_envs=0)
-
-    if camera is not None:
-        camera.start_recording(save_to_filename=args.record, fps=60)
 
     knife_quat, knife_origin = knife_rest_pose(knife)
     visual_quat, visual_origin = knife_rest_pose(knife_visual)
@@ -442,15 +414,8 @@ def main():
         scene.step()
         step += 1
 
-        if camera is not None:
-            camera.render()
-
         if not args.headless and not scene.viewer.is_alive():
             break
-
-    if camera is not None:
-        camera.stop_recording()
-        gs.logger.info(f"Saved video to ~~<{args.record}>~~.")
 
     if "PYTEST_VERSION" not in os.environ:
         gs.logger.info(f"Ran ~~<{step}>~~ steps with ~~<{meat.n_particles}>~~ meat particles.")

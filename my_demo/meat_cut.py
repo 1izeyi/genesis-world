@@ -46,11 +46,14 @@ BLADE_EDGE_THICKNESS = 0.006
 # timestep, but only rebuild and present the SplashSurf mesh at roughly 20 Hz.
 VISUAL_UPDATE_STRIDE = 3
 
-# Cull tiny or geometrically thin detached scraps twice per simulated second. Thickness is measured in
-# particle-lattice spacings so the criterion follows grid density without eroding the main meat surface.
+# Cull tiny components, thin detached sheets, and sparse attached filaments twice per simulated second.
+# Geometric thresholds follow particle-lattice spacing so they remain consistent across grid densities.
 FRAGMENT_CLEANUP_INTERVAL = 30
 MIN_FRAGMENT_PARTICLES = 32
 MIN_FRAGMENT_THICKNESS = 1.5
+MIN_LOCAL_NEIGHBORS = 6
+LOCAL_THICKNESS_RADIUS = 2.25
+MIN_LOCAL_THICKNESS = 1.5
 FRAGMENT_CONFIRMATION_PASSES = 2
 PROTECTED_COMPONENT_FRACTION = 0.10
 MAX_FRAGMENT_REMOVAL_FRACTION = 0.05
@@ -211,7 +214,26 @@ def prune_meat_fragments(meat, particle_size, fragment_strikes):
     n_components, labels = connected_components(graph, directed=False)
     component_sizes = np.bincount(labels)
     main_component = int(np.argmax(component_sizes))
-    candidate = np.zeros(len(particles), dtype=bool)
+    # The count includes the particle itself. A regular 3-D lattice corner still has eight neighbours in
+    # this radius, while an isolated point or a one-particle-wide strand typically has one to three.
+    neighbour_counts = tree.query_ball_point(particles, radius, return_length=True)
+    candidate = neighbour_counts < MIN_LOCAL_NEIGHBORS
+
+    # Connectivity alone cannot see a one- or two-layer membrane while it is still attached to a main
+    # piece. Measure the thinnest PCA extent in a wider neighbourhood as well. At an ordinary exterior
+    # surface this radius reaches roughly two lattice layers into the meat; an actual membrane only spans
+    # zero or one layer and falls below the threshold. Confirmation and the bulk-removal cap below still
+    # apply, so a momentarily compressed surface is not erased after a single check.
+    local_neighbourhoods = tree.query_ball_point(particles, LOCAL_THICKNESS_RADIUS * particle_size)
+    for particle_idx, neighbours in enumerate(local_neighbourhoods):
+        if candidate[particle_idx] or len(neighbours) < MIN_LOCAL_NEIGHBORS:
+            continue
+        local_particles = particles[neighbours]
+        centered = local_particles - local_particles.mean(axis=0)
+        _, _, axes = np.linalg.svd(centered, full_matrices=False)
+        local_thickness = np.ptp(centered @ axes[-1])
+        if local_thickness < MIN_LOCAL_THICKNESS * particle_size:
+            candidate[particle_idx] = True
 
     for component in range(n_components):
         # A clean cut can legitimately leave two similarly sized pieces. Protect every substantial piece,
@@ -257,7 +279,7 @@ def prune_meat_fragments(meat, particle_size, fragment_strikes):
 
     meat.set_particles_active(False, particles_idx_local=removed_indices)
     fragment_strikes[removed_indices] = 0
-    gs.logger.info(f"Removed ~~<{len(removed_indices)}>~~ sparse meat particles.")
+    gs.logger.info(f"Removed ~~<{len(removed_indices)}>~~ thin or sparse meat particles.")
 
 
 def report_cut(meat, particle_size, when):
@@ -546,7 +568,10 @@ def main():
             break
 
     if "PYTEST_VERSION" not in os.environ:
-        gs.logger.info(f"Ran ~~<{step}>~~ steps with ~~<{meat.n_particles}>~~ meat particles.")
+        active_particle_count = len(active_meat_particles(meat)[0])
+        gs.logger.info(
+            f"Ran ~~<{step}>~~ steps with ~~<{active_particle_count}/{meat.n_particles}>~~ active meat particles."
+        )
         report_cut(meat, particle_size, "blade out")
 
 

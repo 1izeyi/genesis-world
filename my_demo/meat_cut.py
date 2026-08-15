@@ -212,20 +212,14 @@ def report_cut(meat, particle_size, when):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("-g", "--grid-density", type=float, default=160.0, help="MPM cells per meter")
-    parser.add_argument("-s", "--substeps", type=int, default=160, help="MPM substeps per step")
+    parser.add_argument("-g", "--grid-density", type=float, default=224.0, help="MPM cells per meter")
+    parser.add_argument("-s", "--substeps", type=int, default=40, help="MPM substeps per step")
     # The knife's blade is only as wide as it is: a slab taller than that can be scored but never cut
     # through, whatever the physics does, so the asset is scaled to a steak the blade can pass through.
     parser.add_argument("--meat-scale", type=float, default=0.40, help="Scale applied to the meat asset")
     parser.add_argument("--spine", type=float, default=0.012, help="Collision blade thickness at the spine")
-    parser.add_argument("-E", "--young", type=float, default=8.0e4, help="Meat stiffness")
-    parser.add_argument(
-        "-y",
-        "--yield-stress",
-        type=float,
-        default=1.5e4,
-        help="Stress past which meat stays deformed",
-    )
+    parser.add_argument("-E", "--young", type=float, default=2.0e4, help="Meat stiffness")
+    parser.add_argument("-y", "--yield-stress", type=float, default=600.0, help="Stress past which meat stays deformed")
     parser.add_argument("--blade-rho", type=float, default=2.0e5, help="Density standing in for the grip on the knife")
     parser.add_argument("--no-cpic", action="store_true", help="Disable CPIC, so the knife dents instead of cutting")
     parser.add_argument(
@@ -311,7 +305,7 @@ def main():
         ),
         material=gs.materials.MPM.ElastoPlastic(
             E=args.young,
-            nu=0.45,
+            nu=0.35,
             rho=1050.0,
             von_mises_yield_stress=args.yield_stress,
             sampler="regular",

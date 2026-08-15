@@ -11,13 +11,11 @@ down to the board and the two halves are severed and can be pushed apart.
 
 Keyboard controls
 -----------------
-arrows      move the knife horizontally (up/down = away from / towards the camera)
-w / s       raise / lower the knife
-a / d       yaw left / right
-q / e       pitch, to rock the blade through a slicing stroke
-space       hold to move at chopping speed
-r           reset the scene
-esc         quit
+arrow keys          move the knife forwards / backwards / left / right
+page up / page down raise / lower the knife
+
+The demo records to ``meat_cut.mp4`` by default. Use ``--record FILE`` to choose another filename or
+``--no-record`` to disable recording.
 """
 
 import argparse
@@ -234,7 +232,21 @@ def main():
         help="Run a scripted stroke instead of reading keys, cutting this fraction of the meat height",
     )
     parser.add_argument("--headless", action="store_true", help="Run without the interactive viewer")
-    parser.add_argument("--record", type=str, default="", help="Also record the run to this video file")
+    recording_group = parser.add_mutually_exclusive_group()
+    recording_group.add_argument(
+        "--record",
+        type=str,
+        default="meat_cut.mp4",
+        metavar="FILE",
+        help="Record the run to this video file (default: meat_cut.mp4)",
+    )
+    recording_group.add_argument(
+        "--no-record",
+        action="store_const",
+        const="",
+        dest="record",
+        help="Disable the default video recording",
+    )
     parser.add_argument("--steps", type=int, default=0, help="Stop after this many steps (0 runs until quit)")
     args = parser.parse_args()
 
@@ -370,37 +382,16 @@ def main():
     knife_quat, knife_origin = knife_rest_pose(knife)
     visual_quat, visual_origin = knife_rest_pose(knife_visual)
     # Everything is commanded through one point on the knife: the middle of the cutting edge. Driving the
-    # edge rather than a link origin means the height asked for is the height that decides whether the
-    # meat is scored or severed, and a pitch command rocks the blade about its edge, as a slicing stroke
-    # does, instead of swinging the edge through the board.
+    # edge rather than a link origin means the requested height directly decides whether the meat is scored
+    # or severed.
     anchor = np.array([blade_asset.bounds[:, 0].mean(), 0.0, blade_asset.bounds[0, 2]], dtype=gs.np_float)
 
     home_pos = np.array([0.0, 0.0, 1.3 * meat_extents[2]], dtype=gs.np_float)
     knife_pos = home_pos.copy()
-    knife_euler = np.zeros(3, dtype=gs.np_float)
     move_cmd = np.zeros(3, dtype=gs.np_float)
-    rotate_cmd = np.zeros(2, dtype=gs.np_float)
-    is_fast = False
-    is_running = True
 
     def move(axis, direction):
         move_cmd[axis] += direction
-
-    def rotate(axis, direction):
-        rotate_cmd[axis] += direction
-
-    def set_fast(fast):
-        nonlocal is_fast
-        is_fast = fast
-
-    def reset():
-        knife_pos[:] = home_pos
-        knife_euler[:] = 0.0
-        scene.reset()
-
-    def stop():
-        nonlocal is_running
-        is_running = False
 
     if not args.headless:
         scene.viewer.register_keybinds(
@@ -408,16 +399,8 @@ def main():
             Keybind("knife_forward", Key.DOWN, KeyAction.HOLD, callback=move, args=(0, -1.0)),
             Keybind("knife_left", Key.LEFT, KeyAction.HOLD, callback=move, args=(1, 1.0)),
             Keybind("knife_right", Key.RIGHT, KeyAction.HOLD, callback=move, args=(1, -1.0)),
-            Keybind("knife_up", Key.W, KeyAction.HOLD, callback=move, args=(2, 1.0)),
-            Keybind("knife_down", Key.S, KeyAction.HOLD, callback=move, args=(2, -1.0)),
-            Keybind("knife_yaw_left", Key.A, KeyAction.HOLD, callback=rotate, args=(1, 1.0)),
-            Keybind("knife_yaw_right", Key.D, KeyAction.HOLD, callback=rotate, args=(1, -1.0)),
-            Keybind("knife_pitch_down", Key.Q, KeyAction.HOLD, callback=rotate, args=(0, 1.0)),
-            Keybind("knife_pitch_up", Key.E, KeyAction.HOLD, callback=rotate, args=(0, -1.0)),
-            Keybind("knife_chop", Key.SPACE, KeyAction.PRESS, callback=set_fast, args=(True,)),
-            Keybind("knife_slow", Key.SPACE, KeyAction.RELEASE, callback=set_fast, args=(False,)),
-            Keybind("reset_scene", Key.R, KeyAction.RELEASE, callback=reset),
-            Keybind("quit", Key.ESCAPE, KeyAction.RELEASE, callback=stop),
+            Keybind("knife_up", Key.PAGEUP, KeyAction.HOLD, callback=move, args=(2, 1.0)),
+            Keybind("knife_down", Key.PAGEDOWN, KeyAction.HOLD, callback=move, args=(2, -1.0)),
         )
 
     dt = scene.sim_options.dt
@@ -426,7 +409,7 @@ def main():
     descent = home_pos[2] - (1.0 - args.chop) * meat_extents[2]
     chop_phases = np.cumsum([0.4, descent / 0.10, 0.8, 0.5])
     step = 0
-    while is_running and (args.steps == 0 or step < args.steps):
+    while args.steps == 0 or step < args.steps:
         if args.chop > 0.0:
             sim_time = step * dt
             if chop_phases[0] < sim_time <= chop_phases[1]:
@@ -442,23 +425,17 @@ def main():
                     report_cut(meat, particle_size, "pushed")
                 move(2, 1.0)
 
-        lin_vel = (0.30 if is_fast else 0.10) * move_cmd
-        ang_vel = 1.2 * np.array([rotate_cmd[0], 0.0, rotate_cmd[1]], dtype=gs.np_float)
+        lin_vel = 0.10 * move_cmd
+        ang_vel = np.zeros(3, dtype=gs.np_float)
         move_cmd[:] = 0.0
-        rotate_cmd[:] = 0.0
 
         knife_pos += lin_vel * dt
         # The edge must stay above the board, or it pushes meat through a surface it cannot leave.
         knife_pos[2] = max(knife_pos[2], 0.0)
-        knife_euler += ang_vel * dt
-        stroke_quat = gu.xyz_to_quat(knife_euler)
-        stroke_R = gu.quat_to_R(stroke_quat)
 
         for entity, rest_quat, origin in ((knife, knife_quat, knife_origin), (knife_visual, visual_quat, visual_origin)):
             entity.set_qpos(
-                np.concatenate(
-                    [knife_pos - stroke_R @ (anchor + origin), gu.transform_quat_by_quat(rest_quat, stroke_quat)]
-                ),
+                np.concatenate([knife_pos - anchor - origin, rest_quat]),
             )
             entity.set_dofs_velocity(np.concatenate([lin_vel, ang_vel]))
 

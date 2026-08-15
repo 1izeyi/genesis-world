@@ -37,6 +37,10 @@ KNIFE_USDZ = ASSETS_DIR / "cc0_kitchen_knife.usdz"
 # Local x below which knife vertices belong to the blade rather than to the handle.
 BLADE_SPLIT_X = -0.012
 
+# Surface reconstruction is substantially more expensive than one physics step. Keep the 60 Hz physics
+# timestep, but only rebuild and present the SplashSurf mesh at roughly 20 Hz.
+VISUAL_UPDATE_STRIDE = 3
+
 
 def load_usd_mesh(path):
     """Return the single mesh of a USDZ asset as a trimesh, in the asset's own frame, scaled to meters.
@@ -218,8 +222,8 @@ def main():
     # through, whatever the physics does, so the asset is scaled to a steak the blade can pass through.
     parser.add_argument("--meat-scale", type=float, default=0.40, help="Scale applied to the meat asset")
     parser.add_argument("--spine", type=float, default=0.012, help="Collision blade thickness at the spine")
-    parser.add_argument("-E", "--young", type=float, default=2.0e4, help="Meat stiffness")
-    parser.add_argument("-y", "--yield-stress", type=float, default=600.0, help="Stress past which meat stays deformed")
+    parser.add_argument("-E", "--young", type=float, default=4.0e4, help="Meat stiffness")
+    parser.add_argument("-y", "--yield-stress", type=float, default=5.0e3, help="Stress past which meat stays deformed")
     parser.add_argument("--blade-rho", type=float, default=2.0e5, help="Density standing in for the grip on the knife")
     parser.add_argument("--no-cpic", action="store_true", help="Disable CPIC, so the knife dents instead of cutting")
     parser.add_argument(
@@ -294,7 +298,7 @@ def main():
         ),
         material=gs.materials.Rigid(
             needs_coup=True,
-            coup_friction=2.0,
+            coup_friction=0.6,
         ),
         surface=gs.surfaces.Rough(color=(0.68, 0.50, 0.31, 1.0)),
     )
@@ -342,7 +346,7 @@ def main():
             # the pose is rewritten. Held in a hand it would not budge: the mass stands in for that grip.
             rho=args.blade_rho,
             gravity_compensation=1.0,
-            coup_friction=0.2,
+            coup_friction=0.05,
             coup_softness=0.004,
             sdf_cell_size=0.0006,
             sdf_max_res=192,
@@ -397,9 +401,14 @@ def main():
                     report_cut(meat, particle_size, "pushed")
                 move(2, 1.0)
 
+        update_visualizer = not args.headless and step % VISUAL_UPDATE_STRIDE == 0
         lin_vel = 0.10 * move_cmd
         ang_vel = np.zeros(3, dtype=gs.np_float)
-        move_cmd[:] = 0.0
+        # Scripted commands are generated on every physics step. Interactive HOLD callbacks, however, are
+        # evaluated by the viewer only when it updates; preserve their most recent value between visual
+        # updates so decimating SplashSurf reconstruction does not also slow the knife down.
+        if args.chop > 0.0 or update_visualizer:
+            move_cmd[:] = 0.0
 
         knife_pos += lin_vel * dt
         # The edge must stay above the board, or it pushes meat through a surface it cannot leave.
@@ -414,7 +423,7 @@ def main():
             )
             entity.set_dofs_velocity(np.concatenate([lin_vel, ang_vel]))
 
-        scene.step()
+        scene.step(update_visualizer=update_visualizer)
         step += 1
 
         if not args.headless and not scene.viewer.is_alive():

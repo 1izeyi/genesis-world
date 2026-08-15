@@ -74,7 +74,13 @@ dependencies = [
     "fast_simplification>=0.1.12",
     # Surface reconstruction library for particle data from SPH simulations
     "pysplashsurf==0.14.*",
+    "torch>=2.13.0",
 ]
+
+[[tool.uv.index]]
+name = "tsinghua"
+url = "https://pypi.tuna.tsinghua.edu.cn/simple"
+default = true
 
 [project.optional-dependencies]
 dev = [

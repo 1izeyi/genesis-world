@@ -211,7 +211,6 @@ def report_cut(meat, particle_size, when):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("-c", "--cpu", action="store_true", help="Run on CPU instead of GPU")
     parser.add_argument("-g", "--grid-density", type=float, default=224.0, help="MPM cells per meter")
     parser.add_argument("-s", "--substeps", type=int, default=40, help="MPM substeps per step")
     # The knife's blade is only as wide as it is: a slab taller than that can be scored but never cut
@@ -232,7 +231,7 @@ def main():
     parser.add_argument("--steps", type=int, default=0, help="Stop after this many steps (0 runs until quit)")
     args = parser.parse_args()
 
-    gs.init(backend=gs.cpu if args.cpu else gs.gpu, precision="32", logging_level="info")
+    gs.init(backend=gs.cuda, precision="32", logging_level="info")
 
     meat_asset = meat_mesh(args.meat_scale)
     knife_asset = load_usd_mesh(KNIFE_USDZ)
@@ -405,7 +404,10 @@ def main():
         # The edge must stay above the board, or it pushes meat through a surface it cannot leave.
         knife_pos[2] = max(knife_pos[2], 0.0)
 
-        for entity, rest_quat, origin in ((knife, knife_quat, knife_origin), (knife_visual, visual_quat, visual_origin)):
+        for entity, rest_quat, origin in (
+            (knife, knife_quat, knife_origin),
+            (knife_visual, visual_quat, visual_origin),
+        ):
             entity.set_qpos(
                 np.concatenate([knife_pos - anchor - origin, rest_quat]),
             )

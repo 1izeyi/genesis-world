@@ -12,7 +12,7 @@ down to the board and the two halves are severed and can be pushed apart.
 Keyboard controls
 -----------------
 arrow keys          move the knife forwards / backwards / left / right
-page up / page down raise / lower the knife
+E / Q               raise / lower the knife
 """
 
 import argparse
@@ -66,7 +66,7 @@ def load_usd_mesh(path):
 
 
 def meat_mesh(scale):
-    """Return the meat as a closed, board-resting trimesh at the requested scale.
+    """Return the meat as a closed, board-resting trimesh, rotated 90 degrees around vertical.
 
     The asset is a triangle soup of eight open shells. Signed-distance queries still classify it
     correctly, but the particle sampler and the renderer both assume a closed surface, so it is wrapped.
@@ -77,6 +77,7 @@ def meat_mesh(scale):
     verts, faces = watertighten_mesh(np.stack([verts[:, 0], -verts[:, 2], verts[:, 1]], axis=1), mesh.faces)
     mesh = trimesh.Trimesh(vertices=verts, faces=faces, process=False)
     mesh.vertices -= mesh.bounds.mean(axis=0)
+    mesh.apply_transform(trimesh.transformations.rotation_matrix(0.5 * np.pi, (0.0, 0.0, 1.0)))
     return mesh
 
 
@@ -242,7 +243,7 @@ def main():
     meat_asset = meat_mesh(args.meat_scale)
     knife_asset = load_usd_mesh(KNIFE_USDZ)
     blade_asset = blade_mesh(0.002, args.spine)
-    meat_file = cached_obj(meat_asset, f"meat_{round(1000 * args.meat_scale)}")
+    meat_file = cached_obj(meat_asset, f"meat_z90_{round(1000 * args.meat_scale)}")
     blade_file = cached_obj(blade_asset, f"blade_{round(1e4 * args.spine)}")
     meat_extents = meat_asset.extents
     particle_size = 0.01 * 64.0 / args.grid_density
@@ -376,8 +377,8 @@ def main():
             Keybind("knife_forward", Key.DOWN, KeyAction.HOLD, callback=move, args=(0, -1.0)),
             Keybind("knife_left", Key.LEFT, KeyAction.HOLD, callback=move, args=(1, 1.0)),
             Keybind("knife_right", Key.RIGHT, KeyAction.HOLD, callback=move, args=(1, -1.0)),
-            Keybind("knife_up", Key.PAGEUP, KeyAction.HOLD, callback=move, args=(2, 1.0)),
-            Keybind("knife_down", Key.PAGEDOWN, KeyAction.HOLD, callback=move, args=(2, -1.0)),
+            Keybind("knife_up", Key.E, KeyAction.HOLD, callback=move, args=(2, 1.0)),
+            Keybind("knife_down", Key.Q, KeyAction.HOLD, callback=move, args=(2, -1.0)),
         )
 
     dt = scene.sim_options.dt

@@ -279,8 +279,8 @@ def main():
     # through, whatever the physics does, so the asset is scaled to a steak the blade can pass through.
     parser.add_argument("--meat-scale", type=float, default=0.40, help="Scale applied to the meat asset")
     parser.add_argument("--spine", type=float, default=0.012, help="Collision blade thickness at the spine")
-    parser.add_argument("-E", "--young", type=float, default=4.0e4, help="Meat stiffness")
-    parser.add_argument("-y", "--yield-stress", type=float, default=5.0e3, help="Stress past which meat stays deformed")
+    parser.add_argument("-E", "--young", type=float, default=2.0e4, help="Meat stiffness")
+    parser.add_argument("-y", "--yield-stress", type=float, default=600.0, help="Stress past which meat stays deformed")
     parser.add_argument("--blade-rho", type=float, default=2.0e5, help="Density standing in for the grip on the knife")
     parser.add_argument("--no-cpic", action="store_true", help="Disable CPIC, so the knife dents instead of cutting")
     parser.add_argument(
@@ -360,7 +360,7 @@ def main():
         ),
         material=gs.materials.Rigid(
             needs_coup=True,
-            coup_friction=0.6,
+            coup_friction=2.0,
         ),
         surface=gs.surfaces.Rough(color=(0.68, 0.50, 0.31, 1.0)),
     )
@@ -408,7 +408,7 @@ def main():
             # the pose is rewritten. Held in a hand it would not budge: the mass stands in for that grip.
             rho=args.blade_rho,
             gravity_compensation=1.0,
-            coup_friction=0.05,
+            coup_friction=0.2,
             coup_softness=0.004,
             sdf_cell_size=0.0006,
             sdf_max_res=192,

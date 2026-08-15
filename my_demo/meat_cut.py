@@ -41,6 +41,12 @@ BLADE_SPLIT_X = -0.012
 # timestep, but only rebuild and present the SplashSurf mesh at roughly 20 Hz.
 VISUAL_UPDATE_STRIDE = 3
 
+# Cull tiny detached scraps and one-particle-wide strands twice per simulated second. The neighbourhood
+# threshold includes the particle itself, so ordinary corners and cut surfaces are retained.
+FRAGMENT_CLEANUP_INTERVAL = 30
+MIN_FRAGMENT_PARTICLES = 12
+MIN_LOCAL_NEIGHBORS = 4
+
 
 def load_usd_mesh(path):
     """Return the single mesh of a USDZ asset as a trimesh, in the asset's own frame, scaled to meters.
@@ -176,6 +182,36 @@ def knife_rest_pose(entity):
     return quat, posed.mean(axis=0) - init.mean(axis=0)
 
 
+def active_meat_particles(meat):
+    """Return the positions and local indices of active meat particles."""
+    active = tensor_to_array(meat.get_particles_active()).astype(bool, copy=False)
+    indices = np.flatnonzero(active)
+    return tensor_to_array(meat.get_particles_pos())[indices], indices
+
+
+def prune_meat_fragments(meat, particle_size):
+    """Permanently deactivate tiny fragments and extremely sparse strands."""
+    particles, active_indices = active_meat_particles(meat)
+    if len(particles) == 0:
+        return
+
+    # This radius connects face- and edge-adjacent samples on the original regular lattice. A healthy
+    # boundary particle still has several neighbours, whereas spray and a one-particle-wide filament do not.
+    tree = KDTree(particles)
+    radius = 1.75 * particle_size
+    graph = tree.sparse_distance_matrix(tree, radius, output_type="coo_matrix")
+    _, labels = connected_components(graph, directed=False)
+    component_sizes = np.bincount(labels)
+    neighbour_counts = tree.query_ball_point(particles, radius, return_length=True)
+    remove = (component_sizes[labels] < MIN_FRAGMENT_PARTICLES) | (neighbour_counts < MIN_LOCAL_NEIGHBORS)
+    if not remove.any():
+        return
+
+    removed_indices = active_indices[remove]
+    meat.set_particles_active(False, particles_idx_local=removed_indices)
+    gs.logger.info(f"Removed ~~<{len(removed_indices)}>~~ sparse meat particles.")
+
+
 def report_cut(meat, particle_size, when):
     """Log how deep the knife's cut runs and whether the slab has come apart.
 
@@ -186,7 +222,7 @@ def report_cut(meat, particle_size, when):
     kerf is found per height as the widest empty band across the cut plane, and the cut reaches as deep as
     the lowest height whose band is still open.
     """
-    particles = tensor_to_array(meat.get_particles_pos())
+    particles, _ = active_meat_particles(meat)
     # The sampler lays particles on a lattice of pitch 'particle_size', so a neighbourhood just above that
     # pitch keeps intact material in one piece while still registering a kerf as a break. A wider radius
     # bridges the cut and reports the slab as whole; a narrower one shatters the lattice under any strain.
@@ -386,6 +422,9 @@ def main():
     chop_phases = np.cumsum([0.4, descent / 0.10, 0.8, 0.5])
     step = 0
     while args.steps == 0 or step < args.steps:
+        if step > 0 and step % FRAGMENT_CLEANUP_INTERVAL == 0:
+            prune_meat_fragments(meat, particle_size)
+
         if args.chop > 0.0:
             sim_time = step * dt
             if chop_phases[0] < sim_time <= chop_phases[1]:

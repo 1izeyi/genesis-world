@@ -45,11 +45,11 @@ BLADE_EDGE_THICKNESS = 0.006
 # timestep, but only rebuild and present the SplashSurf mesh at roughly 20 Hz.
 VISUAL_UPDATE_STRIDE = 3
 
-# Cull tiny detached scraps and one-particle-wide strands twice per simulated second. The neighbourhood
-# threshold includes the particle itself, so ordinary corners and cut surfaces are retained.
+# Cull tiny or geometrically thin detached scraps twice per simulated second. Thickness is measured in
+# particle-lattice spacings so the criterion follows grid density without eroding the main meat surface.
 FRAGMENT_CLEANUP_INTERVAL = 30
-MIN_FRAGMENT_PARTICLES = 12
-MIN_LOCAL_NEIGHBORS = 4
+MIN_FRAGMENT_PARTICLES = 32
+MIN_FRAGMENT_THICKNESS = 1.5
 
 
 def load_usd_mesh(path):
@@ -194,20 +194,37 @@ def active_meat_particles(meat):
 
 
 def prune_meat_fragments(meat, particle_size):
-    """Permanently deactivate tiny fragments and extremely sparse strands."""
+    """Permanently deactivate tiny or geometrically thin fragments detached from the main piece."""
     particles, active_indices = active_meat_particles(meat)
     if len(particles) == 0:
         return
 
-    # This radius connects face- and edge-adjacent samples on the original regular lattice. A healthy
-    # boundary particle still has several neighbours, whereas spray and a one-particle-wide filament do not.
+    # This radius connects face- and edge-adjacent samples on the original regular lattice.
     tree = KDTree(particles)
     radius = 1.75 * particle_size
     graph = tree.sparse_distance_matrix(tree, radius, output_type="coo_matrix")
-    _, labels = connected_components(graph, directed=False)
+    n_components, labels = connected_components(graph, directed=False)
     component_sizes = np.bincount(labels)
-    neighbour_counts = tree.query_ball_point(particles, radius, return_length=True)
-    remove = (component_sizes[labels] < MIN_FRAGMENT_PARTICLES) | (neighbour_counts < MIN_LOCAL_NEIGHBORS)
+    main_component = int(np.argmax(component_sizes))
+    remove = np.zeros(len(particles), dtype=bool)
+
+    for component in range(n_components):
+        if component == main_component:
+            continue
+        component_mask = labels == component
+        component_particles = particles[component_mask]
+        if len(component_particles) < MIN_FRAGMENT_PARTICLES:
+            remove[component_mask] = True
+            continue
+
+        # PCA supplies an orientation-independent thinnest axis. A one- or two-layer sheet has a projected
+        # thickness below 1.5 lattice spacings, while a real three-dimensional cut piece is retained.
+        centered = component_particles - component_particles.mean(axis=0)
+        _, _, axes = np.linalg.svd(centered, full_matrices=False)
+        thickness = np.ptp(centered @ axes[-1])
+        if thickness < MIN_FRAGMENT_THICKNESS * particle_size:
+            remove[component_mask] = True
+
     if not remove.any():
         return
 
@@ -256,8 +273,8 @@ def report_cut(meat, particle_size, when):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("-g", "--grid-density", type=float, default=224.0, help="MPM cells per meter")
-    parser.add_argument("-s", "--substeps", type=int, default=40, help="MPM substeps per step")
+    parser.add_argument("-g", "--grid-density", type=float, default=300, help="MPM cells per meter")
+    parser.add_argument("-s", "--substeps", type=int, default=200, help="MPM substeps per step")
     # The knife's blade is only as wide as it is: a slab taller than that can be scored but never cut
     # through, whatever the physics does, so the asset is scaled to a steak the blade can pass through.
     parser.add_argument("--meat-scale", type=float, default=0.40, help="Scale applied to the meat asset")

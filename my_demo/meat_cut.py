@@ -20,6 +20,7 @@ import os
 from pathlib import Path
 
 import numpy as np
+import torch
 import trimesh
 from scipy.sparse.csgraph import connected_components
 from scipy.spatial import ConvexHull, KDTree
@@ -50,6 +51,9 @@ VISUAL_UPDATE_STRIDE = 3
 FRAGMENT_CLEANUP_INTERVAL = 30
 MIN_FRAGMENT_PARTICLES = 32
 MIN_FRAGMENT_THICKNESS = 1.5
+FRAGMENT_CONFIRMATION_PASSES = 2
+PROTECTED_COMPONENT_FRACTION = 0.10
+MAX_FRAGMENT_REMOVAL_FRACTION = 0.05
 
 
 def load_usd_mesh(path):
@@ -193,10 +197,11 @@ def active_meat_particles(meat):
     return tensor_to_array(meat.get_particles_pos())[indices], indices
 
 
-def prune_meat_fragments(meat, particle_size):
-    """Permanently deactivate tiny or geometrically thin fragments detached from the main piece."""
+def prune_meat_fragments(meat, particle_size, fragment_strikes):
+    """Deactivate persistently tiny or thin scraps without risking a bulk deletion of the meat."""
     particles, active_indices = active_meat_particles(meat)
     if len(particles) == 0:
+        fragment_strikes[:] = 0
         return
 
     # This radius connects face- and edge-adjacent samples on the original regular lattice.
@@ -206,15 +211,17 @@ def prune_meat_fragments(meat, particle_size):
     n_components, labels = connected_components(graph, directed=False)
     component_sizes = np.bincount(labels)
     main_component = int(np.argmax(component_sizes))
-    remove = np.zeros(len(particles), dtype=bool)
+    candidate = np.zeros(len(particles), dtype=bool)
 
     for component in range(n_components):
-        if component == main_component:
+        # A clean cut can legitimately leave two similarly sized pieces. Protect every substantial piece,
+        # not only the single largest component, even if PCA temporarily sees it as thin while it deforms.
+        if component == main_component or component_sizes[component] >= PROTECTED_COMPONENT_FRACTION * len(particles):
             continue
         component_mask = labels == component
         component_particles = particles[component_mask]
         if len(component_particles) < MIN_FRAGMENT_PARTICLES:
-            remove[component_mask] = True
+            candidate[component_mask] = True
             continue
 
         # PCA supplies an orientation-independent thinnest axis. A one- or two-layer sheet has a projected
@@ -223,13 +230,33 @@ def prune_meat_fragments(meat, particle_size):
         _, _, axes = np.linalg.svd(centered, full_matrices=False)
         thickness = np.ptp(centered @ axes[-1])
         if thickness < MIN_FRAGMENT_THICKNESS * particle_size:
-            remove[component_mask] = True
+            candidate[component_mask] = True
 
+    # Connectivity can fluctuate for a frame under large deformation. Require the same particles to remain
+    # candidates for two consecutive cleanup passes before permanently deactivating them.
+    fragment_strikes[active_indices[~candidate]] = 0
+    candidate_indices = active_indices[candidate]
+    fragment_strikes[candidate_indices] = np.minimum(
+        fragment_strikes[candidate_indices] + 1,
+        FRAGMENT_CONFIRMATION_PASSES,
+    )
+    remove = candidate & (fragment_strikes[active_indices] >= FRAGMENT_CONFIRMATION_PASSES)
     if not remove.any():
         return
 
     removed_indices = active_indices[remove]
+    if len(removed_indices) > MAX_FRAGMENT_REMOVAL_FRACTION * len(particles):
+        # A large candidate set means the connectivity test no longer represents scraps (for example after an
+        # unstable step). Keeping questionable particles is safer than erasing a substantial part of the body.
+        fragment_strikes[removed_indices] = 0
+        gs.logger.warning(
+            f"Skipped removal of ~~<{len(removed_indices)}>~~ meat particles "
+            f"({100.0 * len(removed_indices) / len(particles):.1f}% of the active body)."
+        )
+        return
+
     meat.set_particles_active(False, particles_idx_local=removed_indices)
+    fragment_strikes[removed_indices] = 0
     gs.logger.info(f"Removed ~~<{len(removed_indices)}>~~ sparse meat particles.")
 
 
@@ -244,6 +271,10 @@ def report_cut(meat, particle_size, when):
     the lowest height whose band is still open.
     """
     particles, _ = active_meat_particles(meat)
+    if len(particles) == 0:
+        gs.logger.warning(f"[{when}] no active meat particles remain.")
+        return
+
     # The sampler lays particles on a lattice of pitch 'particle_size', so a neighbourhood just above that
     # pitch keeps intact material in one piece while still registering a kerf as a break. A wider radius
     # bridges the cut and reports the slab as whole; a narrower one shatters the lattice under any strain.
@@ -264,7 +295,7 @@ def report_cut(meat, particle_size, when):
         if gap > 2.0 * particle_size:
             open_depth, widest = min(open_depth, z), max(widest, gap)
     cut = (z_hi - open_depth) / (z_hi - z_lo) if z_hi > z_lo else 0.0
-    verdict = "severed" if n_pieces > 1 and sizes[1] > 0.05 * sizes[0] else "joined"
+    verdict = "severed" if len(sizes) > 1 and sizes[1] > 0.05 * sizes[0] else "joined"
     gs.logger.info(
         f"[{when}] {verdict}: {n_pieces} piece(s) {sizes[:2].tolist()}, cut {100.0 * cut:.0f}% deep, "
         f"kerf {1000.0 * widest:.1f} mm, height {1000.0 * (z_hi - z_lo):.1f} mm"
@@ -273,8 +304,8 @@ def report_cut(meat, particle_size, when):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("-g", "--grid-density", type=float, default=300, help="MPM cells per meter")
-    parser.add_argument("-s", "--substeps", type=int, default=200, help="MPM substeps per step")
+    parser.add_argument("-g", "--grid-density", type=float, default=224, help="MPM cells per meter")
+    parser.add_argument("-s", "--substeps", type=int, default=192, help="MPM substeps per step")
     # The knife's blade is only as wide as it is: a slab taller than that can be scored but never cut
     # through, whatever the physics does, so the asset is scaled to a steak the blade can pass through.
     parser.add_argument("--meat-scale", type=float, default=0.40, help="Scale applied to the meat asset")
@@ -293,7 +324,25 @@ def main():
     parser.add_argument("--steps", type=int, default=0, help="Stop after this many steps (0 runs until quit)")
     args = parser.parse_args()
 
-    gs.init(backend=gs.cuda, precision="32", logging_level="info")
+    # Static-array performance mode is beneficial on the target CUDA machine, but produced materially
+    # different MPM results on Metal in local validation. Keep portable GPU selection while enabling the
+    # optimization only on CUDA-capable hosts.
+    gs.init(
+        backend=gs.gpu,
+        precision="32",
+        logging_level="info",
+        performance_mode=torch.cuda.is_available(),
+    )
+
+    # Genesis recommends substep_dt <= 0.02 / grid_density for MPM. The defaults sit slightly above that
+    # boundary and are the highest-resolution combination that remained stable through a complete cut in
+    # local validation. Respect explicit lower values, but make their tunnelling risk visible.
+    recommended_substeps = int(np.ceil((1.0 / 60.0) / (0.02 / args.grid_density)))
+    if args.substeps < recommended_substeps:
+        gs.logger.warning(
+            f"--substeps={args.substeps} is below the recommended minimum {recommended_substeps} "
+            f"for --grid-density={args.grid_density:g}; MPM may be unstable or tunnel through the blade."
+        )
 
     meat_asset = meat_mesh(args.meat_scale)
     knife_asset = load_usd_mesh(KNIFE_USDZ)
@@ -417,6 +466,8 @@ def main():
 
     scene.build(n_envs=0)
 
+    fragment_strikes = np.zeros(meat.n_particles, dtype=np.uint8)
+
     knife_quat, knife_origin = knife_rest_pose(knife)
     visual_quat, visual_origin = knife_rest_pose(knife_visual)
     # Everything is commanded through one point on the knife: the middle of the cutting edge. Driving the
@@ -449,7 +500,7 @@ def main():
     step = 0
     while args.steps == 0 or step < args.steps:
         if step > 0 and step % FRAGMENT_CLEANUP_INTERVAL == 0:
-            prune_meat_fragments(meat, particle_size)
+            prune_meat_fragments(meat, particle_size, fragment_strikes)
 
         if args.chop > 0.0:
             sim_time = step * dt

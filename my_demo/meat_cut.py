@@ -37,6 +37,10 @@ KNIFE_USDZ = ASSETS_DIR / "cc0_kitchen_knife.usdz"
 # Local x below which knife vertices belong to the blade rather than to the handle.
 BLADE_SPLIT_X = -0.012
 
+# The visible USD blade stays at its authored thickness. Its hidden CPIC collider must be at least one
+# default MPM grid cell wide, otherwise it can fall between the particle/grid samples without opening a cut.
+BLADE_EDGE_THICKNESS = 0.0045
+
 # Surface reconstruction is substantially more expensive than one physics step. Keep the 60 Hz physics
 # timestep, but only rebuild and present the SplashSurf mesh at roughly 20 Hz.
 VISUAL_UPDATE_STRIDE = 3
@@ -276,9 +280,14 @@ def main():
 
     meat_asset = meat_mesh(args.meat_scale)
     knife_asset = load_usd_mesh(KNIFE_USDZ)
-    blade_asset = blade_mesh(0.002, args.spine)
+    blade_asset = blade_mesh(BLADE_EDGE_THICKNESS, args.spine)
     meat_file = cached_obj(meat_asset, f"meat_z90_{round(1000 * args.meat_scale)}")
-    blade_file = cached_obj(blade_asset, f"blade_{round(1e4 * args.spine)}")
+    # Include both wedge dimensions in the key so changing the edge thickness cannot silently reuse an
+    # older, thinner collision mesh from Genesis's cache.
+    blade_file = cached_obj(
+        blade_asset,
+        f"blade_e{round(1e4 * BLADE_EDGE_THICKNESS)}_s{round(1e4 * args.spine)}",
+    )
     meat_extents = meat_asset.extents
     particle_size = 0.01 * 64.0 / args.grid_density
     blade_width = blade_asset.extents[2]
